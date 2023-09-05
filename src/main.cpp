@@ -42,7 +42,7 @@ int bat_percentage;
 int analogInPin = A0; // Analog input pin!
 int sensorValue;
 
-// Pins for charging and standby
+// Pins for charging and standby :)
 const int CHARGING_PIN = D7;
 const int STANDBY_PIN = D6;
 
