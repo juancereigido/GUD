@@ -39,7 +39,7 @@
 
 float voltage;
 int bat_percentage;
-int analogInPin = A0; // Analog input pin
+int analogInPin = A0; // Analog input pin!
 int sensorValue;
 
 // Pins for charging and standby
