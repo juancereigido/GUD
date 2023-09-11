@@ -8,6 +8,12 @@
  *  
  *  It also includes a basic filter in the readings of the MPU that helps smoothing the values so the functions do not start by minor noises in the readings and micromovements.
  */
+#define DEBUG 1 // Set to 1 to enable debug in the code, 0 to disable
+#if DEBUG
+  #define DEBUG_PRINT(x)  Serial.println (x)
+#else
+  #define DEBUG_PRINT(x)
+#endif
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -29,13 +35,6 @@
 #define MIN_BRIGHTNESS 0  // Adjust this value to change the minimum brightness
 #define BRIGHTNESS_INCREMENT 1  // Adjust this value to change the brightness increment
 #define BRIGHTNESS_THRESHOLD 50 // Adjust this value to change the brightness treshold when brightness is close to 0 to create a smooth transition and avoid the LEDs to change too suddenly
-
-#define DEBUG 0 // Set to 1 to enable debug in the code, 0 to disable
-#if DEBUG
-  #define DEBUG_PRINT(x)  Serial.println (x)
-#else
-  #define DEBUG_PRINT(x)
-#endif
 
 float voltage;
 int bat_percentage;
@@ -83,7 +82,7 @@ unsigned long previousFadeBlackMillis = 0;  // Keep track of the last time fadeT
 // Filter constants to smooth the readings of the MPU 6050
 static float previousAngleX = 0;
 static float previousAngleY = 0;
-float alpha = 0.75; // factor between 0 and 1, which determines the weight given to the current value. A smaller alpha gives more weight to older values, while a larger alpha makes the filter respond more to recent changes
+float alpha = 0.7; // factor between 0 and 1, which determines the weight given to the current value. A smaller alpha gives more weight to older values, while a larger alpha makes the filter respond more to recent changes
 
 // Functions declaration for the VS Code IDE (platformio) -- Not needed for Arduino IDE
 void decreaseBrightness();
@@ -98,6 +97,8 @@ int STATE = 0; // 0 OFF, 1 ON
 int POSITION_STATE = 0;
 bool needToFadeIn = false;
 bool needToFadeOut = false;
+bool isTiltedX = false;
+bool isTiltedY = false;
 
 void setup()
 {
@@ -159,8 +160,7 @@ void loop()
   values = "Axis X: " + String(Angle[0], 1) + " - Axis Y: " + String(Angle[1], 1);
   DEBUG_PRINT("Brightness:" + String(brightness) + " - "+ values);
 
-  // START ------- TP4056 battery management -------
-  
+  // TP4056 battery management
   sensorValue = analogRead(analogInPin);
   // Multiply by two as voltage divider network is 100K & 100K Resistor
   voltage = (((sensorValue * 3.3) / 1024) * 2 - calibration);
@@ -171,42 +171,47 @@ void loop()
   if (bat_percentage <= 0) {bat_percentage = 1;}
 
   // Check charging status
-  if(digitalRead(CHARGING_PIN) == 1){
-    isCharging = true;
-  } else if (digitalRead(CHARGING_PIN) == 0) {
-    isCharging = false;
-  }
-
-  // END -------  TP4056 battery management -------
-
-  if(isCharging == true) {
+  if(digitalRead(CHARGING_PIN) == 1){ // Is charging
     DEBUG_PRINT("CHARGER CONNECTED");
     
-    bool isTilted = Angle[0] >= TILT_THRESHOLD;
+    if(Angle[0] >= TILT_THRESHOLD || Angle[0] <= -TILT_THRESHOLD) {
+      isTiltedX = true;
+      DEBUG_PRINT("X is tilted");
+    } else {
+      isTiltedX = false;
+      DEBUG_PRINT("X is NOT tilted");
+    }
 
-    if (isTilted && STATE == 0 && POSITION_STATE == 0) {
+    if(Angle[1] >= TILT_THRESHOLD || Angle[1] <= -TILT_THRESHOLD) {
+      isTiltedY = true;
+      DEBUG_PRINT("Y is tilted");
+    } else {
+      isTiltedY = false;
+      DEBUG_PRINT("Y is NOT tilted");
+    }
+
+    if ((isTiltedX || isTiltedY) && STATE == 0 && POSITION_STATE == 0) {
       STATE = 1; // Change to ON
       POSITION_STATE = 1;
       DEBUG_PRINT("State changed to ON");
-    } else if (isTilted && STATE == 1 && POSITION_STATE == 0) {
+    } else if ((isTiltedX || isTiltedY) && STATE == 1 && POSITION_STATE == 0) {
       STATE = 0; // Change to OFF
       POSITION_STATE = 1;
       DEBUG_PRINT("State changed to OFF");
     }
 
-    if (!isTilted && POSITION_STATE == 1) {
+    if ((Angle[0] <= 3 && Angle[0] >= -3) && (Angle[1] <= 3 && Angle[1] >= -3) && POSITION_STATE == 1) {
       POSITION_STATE = 0;
       DEBUG_PRINT("MOVED TO THE CENTER ------------------------------");
     }
+
 
     if (STATE == 1) {
       fadeToWhite();
     } else if (STATE == 0) {
       fadeToBlack();
     }
-
-
-  } else if (isCharging == false) {
+  } else if (digitalRead(CHARGING_PIN) == 0) { // Is disconnected from the charger
     DEBUG_PRINT(" CHARGER DISCONNECTED ");
   }
   
@@ -272,7 +277,7 @@ void fadeToWhite() {
 
 void fadeToBlack() {
   unsigned long currentMillis = millis();
-  if(currentMillis - previousFadeBlackMillis >= FADE_SPEED) {
+  if(currentMillis - previousFadeBlackMillis >= 3) {
     previousFadeBlackMillis = currentMillis;
     if(brightness > MIN_BRIGHTNESS) {
       brightness--;
@@ -280,4 +285,4 @@ void fadeToBlack() {
       FastLED.show();
     }
   }
-} // aS
+}
