@@ -96,9 +96,12 @@ void calculateAngles();
 int STATE = 0; // 0 OFF, 1 ON
 int POSITION_STATE = 0;
 bool needToFadeIn = false;
-bool needToFadeOut = false;
+bool needToFadeToBlack = false;
 bool isTiltedX = false;
 bool isTiltedY = false;
+unsigned long tiltStartTimeX = 0;
+unsigned long tiltStartTimeY = 0;
+unsigned long previousIncreaseMillis = 0;  // Keep track of the last time increaseBrightness() was updated
 
 void setup()
 {
@@ -158,7 +161,7 @@ void loop()
 
   // Print the angles values to debug
   values = "Axis X: " + String(Angle[0], 1) + " - Axis Y: " + String(Angle[1], 1);
-  DEBUG_PRINT("Brightness:" + String(brightness) + " - "+ values);
+  //DEBUG_PRINT("Brightness:" + String(brightness) + " - "+ values);
 
   // TP4056 battery management
   sensorValue = analogRead(analogInPin);
@@ -172,36 +175,63 @@ void loop()
 
   // Check charging status
   if(digitalRead(CHARGING_PIN) == 1){ // Is charging
-    DEBUG_PRINT("CHARGER CONNECTED");
-    
+    //DEBUG_PRINT("CHARGER CONNECTED");
+
+    // Check if X axis is tilted
     if(Angle[0] >= TILT_THRESHOLD || Angle[0] <= -TILT_THRESHOLD) {
-      isTiltedX = true;
-      DEBUG_PRINT("X is tilted");
+      if (!isTiltedX) {
+        tiltStartTimeX = millis();
+        isTiltedX = true;
+        DEBUG_PRINT("X is tilted");
+      }
+      if (millis() - tiltStartTimeX >= 2000 && STATE == 1) {
+        // Run your function here for X axis
+        increaseBrightness();
+        isIncreasingBrightness = true;
+        DEBUG_PRINT("X is tilted for 2 seconds ///////////////////////////////////////");
+      }
     } else {
       isTiltedX = false;
-      DEBUG_PRINT("X is NOT tilted");
     }
 
+    // Check if Y axis is tilted
     if(Angle[1] >= TILT_THRESHOLD || Angle[1] <= -TILT_THRESHOLD) {
-      isTiltedY = true;
-      DEBUG_PRINT("Y is tilted");
+      if (!isTiltedY) {
+        tiltStartTimeY = millis();
+        isTiltedY = true;
+        DEBUG_PRINT("Y is tilted");
+      }
+      if (millis() - tiltStartTimeY >= 2000 && STATE == 1) {
+        // Run your function here for Y axis
+        increaseBrightness();
+        isIncreasingBrightness = true;
+        DEBUG_PRINT("Y is tilted for 2 seconds ///////////////////////////////////////");
+      }
     } else {
       isTiltedY = false;
-      DEBUG_PRINT("Y is NOT tilted");
     }
 
     if ((isTiltedX || isTiltedY) && STATE == 0 && POSITION_STATE == 0) {
       STATE = 1; // Change to ON
-      POSITION_STATE = 1;
       DEBUG_PRINT("State changed to ON");
-    } else if ((isTiltedX || isTiltedY) && STATE == 1 && POSITION_STATE == 0) {
-      STATE = 0; // Change to OFF
       POSITION_STATE = 1;
-      DEBUG_PRINT("State changed to OFF");
+    } else if ((isTiltedX || isTiltedY) && STATE == 1 && POSITION_STATE == 0) {
+      needToFadeToBlack = true;
+      POSITION_STATE = 1;
     }
 
     if ((Angle[0] <= 3 && Angle[0] >= -3) && (Angle[1] <= 3 && Angle[1] >= -3) && POSITION_STATE == 1) {
+      if (needToFadeToBlack == true && isIncreasingBrightness == false)
+      {
+        STATE = 0;
+        DEBUG_PRINT("State changed to OFF");
+        needToFadeToBlack = false;
+      }
+      
       POSITION_STATE = 0;
+      tiltStartTimeX = 0;  // Reset the counter for X axis
+      tiltStartTimeY = 0;  // Reset the counter for Y axis
+      isIncreasingBrightness = false; 
       DEBUG_PRINT("MOVED TO THE CENTER ------------------------------");
     }
 
@@ -213,6 +243,7 @@ void loop()
     }
   } else if (digitalRead(CHARGING_PIN) == 0) { // Is disconnected from the charger
     DEBUG_PRINT(" CHARGER DISCONNECTED ");
+    fadeToWhite();
   }
   
   FastLED.show();
@@ -267,7 +298,7 @@ void fadeToWhite() {
   unsigned long currentMillis = millis();
   if(currentMillis - previousFadeWhiteMillis >= FADE_SPEED) {
     previousFadeWhiteMillis = currentMillis;
-    if(brightness < MAX_BRIGHTNESS) {
+    if(brightness < 50) {
       brightness++;
       fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
       FastLED.show();
@@ -277,8 +308,38 @@ void fadeToWhite() {
 
 void fadeToBlack() {
   unsigned long currentMillis = millis();
-  if(currentMillis - previousFadeBlackMillis >= 3) {
+  if(currentMillis - previousFadeBlackMillis >= 2) {
     previousFadeBlackMillis = currentMillis;
+    if(brightness > MIN_BRIGHTNESS) {
+      if (brightness > 75) { // Increase the speed when values are above 75 since eyes won't see much of a change
+        brightness -= 5;
+        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+        FastLED.show();
+      } else {
+        brightness--;
+        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+        FastLED.show();
+      }
+    }
+  }
+}
+
+void increaseBrightness() {
+  unsigned long currentMillis = millis();
+  if(currentMillis - previousIncreaseMillis >= FADE_SPEED) {
+    previousIncreaseMillis = currentMillis;
+    if(brightness < 255) {
+      brightness++;
+      fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+      FastLED.show();
+    }
+  }
+}
+
+void decreaseBrightness() {
+  unsigned long currentMillis = millis();
+  if(currentMillis - previousIncreaseMillis >= FADE_SPEED) {
+    previousIncreaseMillis = currentMillis;
     if(brightness > MIN_BRIGHTNESS) {
       brightness--;
       fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
