@@ -83,7 +83,7 @@ bool isFadingIn = false;
 bool isFadingOut = false;
 bool isIncreasingBrightness = false;
 bool isDecreasingBrightness = false;
-int savedBrightness = MAX_BRIGHTNESS; // Saves user defined brightness. It starts in MAX_BRIGHTNESS by default
+int savedBrightness = 50; // Saves user defined brightness. It starts in MAX_BRIGHTNESS by default
 
 int prevSavedBrightness = -1;  // start with an invalid brightness value -- This is a variable to check if the brightness value has changed to save the new one in the EEPROM
 
@@ -112,11 +112,12 @@ unsigned long previousIncreaseMillis = 0;  // Keep track of the last time increa
 String lastAngle; // Will store in which direction it was last turned on
 unsigned long lastTiltTime = 0;
 unsigned long debounceDelay = 1000; // Adjust this value based on your needs
+bool isBrightnessAdjusted = false; // Add this line at the top with the other global variables
 
 void setup()
 {
-  EEPROM.begin(512);
-  EEPROM.get(0, savedBrightness); // Retrieves the brightness value from EEPROM
+  //EEPROM.begin(512);
+  //EEPROM.get(0, savedBrightness); // Retrieves the brightness value from EEPROM
 
   Serial.begin(115200);
   Wire.begin(2,0);
@@ -157,6 +158,7 @@ void loop()
   // Print the angles values to debug
   values = "Axis X: " + String(angleX, 1) + " - Axis Y: " + String(angleY, 1);
   //DEBUG_PRINT("Brightness:" + String(brightness) + " - "+ values);
+  DEBUG_PRINT("Brightness:" + String(brightness));
 
   // TP4056 battery management
   sensorValue = analogRead(analogInPin);
@@ -177,13 +179,15 @@ void loop()
       if (!isTiltedX) {
         tiltStartTimeX = millis();
         isTiltedX = true;
+        isBrightnessAdjusted = false; // Reset the flag when the cube is tilted
         DEBUG_PRINT("X is tilted");
       }
       
       if (millis() - tiltStartTimeX >= 1000 && STATE == 1) {
-        increaseBrightness();
-        isIncreasingBrightness = true;
         DEBUG_PRINT("X is tilted for 1 second ///////////////////////////////////////");
+        decreaseBrightness();
+        isDecreasingBrightness = true;
+        isBrightnessAdjusted = true; // Set the flag when brightness is adjusted
       }
     } else {
       isTiltedX = false;
@@ -194,13 +198,14 @@ void loop()
       if (!isTiltedY) {
         tiltStartTimeY = millis();
         isTiltedY = true;
+        isBrightnessAdjusted = false; // Reset the flag when the cube is tilted
         DEBUG_PRINT("Y is tilted");
       }
       
       if (millis() - tiltStartTimeY >= 1000) {
+        DEBUG_PRINT("Y is tilted for 1 second ///////////////////////////////////////");
         increaseBrightness();
         isIncreasingBrightness = true;
-        DEBUG_PRINT("Y is tilted for 1 second ///////////////////////////////////////");
       }
     } else {
       isTiltedY = false;
@@ -212,12 +217,12 @@ void loop()
       POSITION_STATE = 1;
       saveLastAngle(); // Save last direction it was turned on
     } else if ((isTiltedX || isTiltedY) && STATE == 1 && POSITION_STATE == 0) {
-      needToFadeToBlack = true;
-      POSITION_STATE = 1;
-    }
+        needToFadeToBlack = true;
+        POSITION_STATE = 1;
+      }
 
     if ((angleX <= 3 && angleX >= -3) && (angleY <= 3 && angleY >= -3) && POSITION_STATE == 1) {
-      if (needToFadeToBlack == true && isIncreasingBrightness == false)
+      if (needToFadeToBlack == true && isIncreasingBrightness == false && !isBrightnessAdjusted)
       {
         STATE = 0;
         DEBUG_PRINT("State changed to OFF");
@@ -228,15 +233,16 @@ void loop()
       tiltStartTimeX = 0;  // Reset the counter for X axis
       tiltStartTimeY = 0;  // Reset the counter for Y axis
       isIncreasingBrightness = false; 
+      isDecreasingBrightness = false;
       DEBUG_PRINT("MOVED TO THE CENTER ------------------------------");
     }
 
-
-    if (STATE == 1) {
+    if (STATE == 1 && isDecreasingBrightness == false) {
       fadeToWhite();
-    } else if (STATE == 0) {
+    } else if (STATE == 0 && isDecreasingBrightness == false && isIncreasingBrightness == false && !isBrightnessAdjusted) {
       fadeToBlack();
     }
+
   } else if (digitalRead(CHARGING_PIN) == 0) { // Is disconnected from the charger
     DEBUG_PRINT(" CHARGER DISCONNECTED ");
     POSITION_STATE = 1;
@@ -268,10 +274,11 @@ float mapfloat(float x, float in_min, float in_max, float out_min, float out_max
 }
 
 void fadeToWhite() {
+  DEBUG_PRINT(" fadeToWhite ");
   unsigned long currentMillis = millis();
   if(currentMillis - previousFadeWhiteMillis >= FADE_SPEED) {
     previousFadeWhiteMillis = currentMillis;
-    if(brightness < 50) {
+    if(brightness < savedBrightness && isDecreasingBrightness == false) {
       brightness++;
       fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
       FastLED.show();
@@ -283,7 +290,7 @@ void fadeToBlack() {
   unsigned long currentMillis = millis();
   if(currentMillis - previousFadeBlackMillis >= 2) {
     previousFadeBlackMillis = currentMillis;
-    if(brightness > MIN_BRIGHTNESS) {
+    if(brightness > 0) {
       if (brightness > 75) { // Increase the speed when values are above 75 since eyes won't see much of a change
         brightness -= 5;
         fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
@@ -305,18 +312,20 @@ void increaseBrightness() {
       brightness++;
       fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
       FastLED.show();
+      savedBrightness = brightness;
     }
   }
 }
 
 void decreaseBrightness() {
   unsigned long currentMillis = millis();
-  if(currentMillis - previousIncreaseMillis >= FADE_SPEED) {
+  if(currentMillis - previousIncreaseMillis >= (FADE_SPEED*2)) { // Will decrease slower for more accuracy
     previousIncreaseMillis = currentMillis;
-    if(brightness > 0) {
+    if(brightness > 15) {
       brightness--;
       fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
       FastLED.show();
+      savedBrightness = brightness;
     }
   }
 }
