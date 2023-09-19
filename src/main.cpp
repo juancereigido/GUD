@@ -82,7 +82,6 @@ unsigned long previousFadeBlackMillis = 0;  // Keep track of the last time fadeT
 // Filter constants to smooth the readings of the MPU 6050
 static float previousAngleX = 0;
 static float previousAngleY = 0;
-float alpha = 0.7; // factor between 0 and 1, which determines the weight given to the current value. A smaller alpha gives more weight to older values, while a larger alpha makes the filter respond more to recent changes
 
 // Functions declaration for the VS Code IDE (platformio) -- Not needed for Arduino IDE
 void decreaseBrightness();
@@ -91,6 +90,7 @@ void fadeToBlack();
 void fadeToWhite();
 void readRawData();
 void calculateAngles();
+void saveLastAngle();
 
 // Test SIMPLE
 int STATE = 0; // 0 OFF, 1 ON
@@ -102,6 +102,9 @@ bool isTiltedY = false;
 unsigned long tiltStartTimeX = 0;
 unsigned long tiltStartTimeY = 0;
 unsigned long previousIncreaseMillis = 0;  // Keep track of the last time increaseBrightness() was updated
+String lastAngle; // Will store in which direction it was last turned on
+unsigned long lastTiltTime = 0;
+unsigned long debounceDelay = 1000; // Adjust this value based on your needs
 
 void setup()
 {
@@ -184,11 +187,11 @@ void loop()
         isTiltedX = true;
         DEBUG_PRINT("X is tilted");
       }
-      if (millis() - tiltStartTimeX >= 2000 && STATE == 1) {
-        // Run your function here for X axis
+      
+      if (millis() - tiltStartTimeX >= 1000 && STATE == 1) {
         increaseBrightness();
         isIncreasingBrightness = true;
-        DEBUG_PRINT("X is tilted for 2 seconds ///////////////////////////////////////");
+        DEBUG_PRINT("X is tilted for 1 second ///////////////////////////////////////");
       }
     } else {
       isTiltedX = false;
@@ -201,11 +204,11 @@ void loop()
         isTiltedY = true;
         DEBUG_PRINT("Y is tilted");
       }
-      if (millis() - tiltStartTimeY >= 2000 && STATE == 1) {
-        // Run your function here for Y axis
+      
+      if (millis() - tiltStartTimeY >= 1000) {
         increaseBrightness();
         isIncreasingBrightness = true;
-        DEBUG_PRINT("Y is tilted for 2 seconds ///////////////////////////////////////");
+        DEBUG_PRINT("Y is tilted for 1 second ///////////////////////////////////////");
       }
     } else {
       isTiltedY = false;
@@ -215,6 +218,7 @@ void loop()
       STATE = 1; // Change to ON
       DEBUG_PRINT("State changed to ON");
       POSITION_STATE = 1;
+      saveLastAngle(); // Save last direction it was turned on
     } else if ((isTiltedX || isTiltedY) && STATE == 1 && POSITION_STATE == 0) {
       needToFadeToBlack = true;
       POSITION_STATE = 1;
@@ -243,6 +247,7 @@ void loop()
     }
   } else if (digitalRead(CHARGING_PIN) == 0) { // Is disconnected from the charger
     DEBUG_PRINT(" CHARGER DISCONNECTED ");
+    POSITION_STATE = 1;
     fadeToWhite();
   }
   
@@ -253,41 +258,40 @@ void loop()
 
 void readRawData()
 {
+  // Read the values from the IMU Accelerometer
   Wire.beginTransmission(MPU);
-  Wire.write(0x3B);
+  Wire.write(0x3B); // Ask for register 0x3B - corresponds to AcX
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU,6,true);
-  AcX=Wire.read()<<8|Wire.read();
+  Wire.requestFrom(MPU,6,true);   // From 0x3B, 6 registers are requested
+  AcX=Wire.read()<<8|Wire.read(); // Each value occupies 2 registers
   AcY=Wire.read()<<8|Wire.read();
   AcZ=Wire.read()<<8|Wire.read();
 
+  // Read the values from the Gyroscope
   Wire.beginTransmission(MPU);
   Wire.write(0x43);
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU,4,true);
-  GyX=Wire.read()<<8|Wire.read();
+  Wire.requestFrom(MPU,6,true);   // From 0x43, 6 registers are requested
+  GyX=Wire.read()<<8|Wire.read(); // Each value occupies 2 registers
   GyY=Wire.read()<<8|Wire.read();
+  GyZ=Wire.read()<<8|Wire.read();
 }
 
-void calculateAngles()
-{
+void calculateAngles() {
   Acc[0] = atan(-1*(AcX/A_R)/sqrt(pow((AcY/A_R),2) + pow((AcZ/A_R),2)))*RAD_TO_DEG;
   Acc[1] = atan((AcY/A_R)/sqrt(pow((AcX/A_R),2) + pow((AcZ/A_R),2)))*RAD_TO_DEG;
 
+  // Calculation of the Gyroscope angle
   Gy[0] = GyX/G_R;
   Gy[1] = GyY/G_R;
+  //Gy[2] = GyZ/G_R;
 
   dt = (millis() - previous_time) / 1000.0;
   previous_time = millis();
 
+  // Apply the Complementary Filter
   Angle[0] = 0.98 *(Angle[0]+Gy[0]*dt) + 0.02*Acc[0];
   Angle[1] = 0.98 *(Angle[1]+Gy[1]*dt) + 0.02*Acc[1];
-
-  Angle[0] = (1 - alpha) * previousAngleX + alpha * Angle[0];
-  Angle[1] = (1 - alpha) * previousAngleY + alpha * Angle[1];
-
-  previousAngleX = Angle[0];
-  previousAngleY = Angle[1];
 }
 
 float mapfloat(float x, float in_min, float in_max, float out_min, float out_max) {
@@ -340,10 +344,27 @@ void decreaseBrightness() {
   unsigned long currentMillis = millis();
   if(currentMillis - previousIncreaseMillis >= FADE_SPEED) {
     previousIncreaseMillis = currentMillis;
-    if(brightness > MIN_BRIGHTNESS) {
+    if(brightness > 0) {
       brightness--;
       fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
       FastLED.show();
     }
+  }
+}
+
+void saveLastAngle() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastTiltTime > debounceDelay) {
+    if (abs(Angle[1]) <= TILT_THRESHOLD && Angle[0] >= TILT_THRESHOLD) {
+      lastAngle = "X+";
+    } else if (abs(Angle[1]) <= TILT_THRESHOLD && Angle[0] <= -TILT_THRESHOLD) {
+      lastAngle = "X-";
+    } else if (abs(Angle[0]) <= TILT_THRESHOLD && Angle[1] >= TILT_THRESHOLD) {
+      lastAngle = "Y+";
+    } else if (abs(Angle[0]) <= TILT_THRESHOLD && Angle[1] <= -TILT_THRESHOLD) {
+      lastAngle = "Y-";
+    }
+    lastTiltTime = currentMillis;
+    DEBUG_PRINT(" LAST ANGLE WAS " + lastAngle);
   }
 }
