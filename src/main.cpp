@@ -19,18 +19,36 @@
 #include <Wire.h>
 #include <FastLED.h>
 #include <EEPROM.h>
+#include <I2Cdev.h>     
+#include <MPU6050.h>
+#include <MadgwickAHRS.h>
 
-#define MPU 0x68
-#define A_R 16384.0
+// MPU 6050 config
+Madgwick filter;
+unsigned long lastUpdateTime = 0;
 #define G_R 131.0
-#define RAD_TO_DEG 57.295779
+float offsetX = 0.0, offsetY = 0.0;
+float angleX = 0;
+float angleY = 0;
+
+MPU6050 mpu;
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+
+struct MyData {
+  byte X;
+  byte Y;
+  byte Z;
+};
+
+MyData data;
 
 // LED Matrix
 #define NUM_LEDS 64
 #define LED_PIN 4
 
 #define FADE_SPEED 7  // Adjust this value to change the speed of the fading transition
-#define TILT_THRESHOLD 4  // Adjust this value to change the tilt threshold
+#define TILT_THRESHOLD 6  // Adjust this value to change the tilt threshold
 #define MAX_BRIGHTNESS 255  // Adjust this value to change the maximum brightness
 #define MIN_BRIGHTNESS 0  // Adjust this value to change the minimum brightness
 #define BRIGHTNESS_INCREMENT 1  // Adjust this value to change the brightness increment
@@ -55,13 +73,6 @@ bool isStandby;
 
 CRGB leds[NUM_LEDS];
 
-int16_t AcX, AcY, AcZ, GyX, GyY, GyZ;
-float Acc[2];
-float Gy[2];
-float Angle[2];
-float OffsetAcc[2] = {0, 0};
-float OffsetGy[2] = {0, 0};
-
 String values;
 long previous_time;
 float dt;
@@ -78,10 +89,6 @@ int prevSavedBrightness = -1;  // start with an invalid brightness value -- This
 
 unsigned long previousFadeWhiteMillis = 0;  // Keep track of the last time fadeToWhite() was updated
 unsigned long previousFadeBlackMillis = 0;  // Keep track of the last time fadeToBlack() was updated
-
-// Filter constants to smooth the readings of the MPU 6050
-static float previousAngleX = 0;
-static float previousAngleY = 0;
 
 // Functions declaration for the VS Code IDE (platformio) -- Not needed for Arduino IDE
 void decreaseBrightness();
@@ -111,12 +118,10 @@ void setup()
   EEPROM.begin(512);
   EEPROM.get(0, savedBrightness); // Retrieves the brightness value from EEPROM
 
-  Wire.begin(2,0);
-  Wire.beginTransmission(MPU);
-  Wire.write(0x6B);
-  Wire.write(0);
-  Wire.endTransmission(true);
   Serial.begin(115200);
+  Wire.begin(2,0);
+  mpu.initialize();
+  filter.begin(50);  // Set sample frequency to 50Hz
 
   FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
   FastLED.setCorrection(Candle); // Setup the LED Matrix to warm white
@@ -127,22 +132,17 @@ void setup()
   pinMode(CHARGING_PIN, INPUT); // Using internal pull-up
   pinMode(STANDBY_PIN, INPUT); // Using internal pull-up
 
-  // MPU Calibration at start so no matter if the user turns on the lamp in a tilted table, it will be start in zero on all axis.
-  for(int i = 0; i < 400; i++)
-  {
-    readRawData();
-    OffsetAcc[0] += AcX;
-    OffsetAcc[1] += AcY;
-    OffsetGy[0] += GyX;
-    OffsetGy[1] += GyY;
-    delay(5);
+  // Calibration routine
+  const int calibrationCount = 400;  // Number of readings to take for calibration
+  for (int i = 0; i < calibrationCount; i++) {
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    filter.updateIMU(gx / G_R, gy / G_R, gz / G_R, ax, ay, az);
+    offsetX += filter.getRoll();
+    offsetY += filter.getPitch();
+    delay(1);  // Wait a bit before the next reading
   }
-
-  // Calculate average
-  OffsetAcc[0] /= 400.0;
-  OffsetAcc[1] /= 400.0;
-  OffsetGy[0] /= 400.0;
-  OffsetGy[1] /= 400.0;
+  offsetX /= calibrationCount;  // Average to get the offset
+  offsetY /= calibrationCount;
 
   // Ensure the LED matrix is off when turning on the device
   FastLED.clear();
@@ -151,19 +151,11 @@ void setup()
 
 void loop()
 {
-  readRawData();
-
-  // Apply offset from the calibration
-  AcX -= OffsetAcc[0];
-  AcY -= OffsetAcc[1];
-  GyX -= OffsetGy[0];
-  GyY -= OffsetGy[1];
-
   // Calculate angles from the MPU
   calculateAngles();
 
   // Print the angles values to debug
-  values = "Axis X: " + String(Angle[0], 1) + " - Axis Y: " + String(Angle[1], 1);
+  values = "Axis X: " + String(angleX, 1) + " - Axis Y: " + String(angleY, 1);
   //DEBUG_PRINT("Brightness:" + String(brightness) + " - "+ values);
 
   // TP4056 battery management
@@ -181,7 +173,7 @@ void loop()
     //DEBUG_PRINT("CHARGER CONNECTED");
 
     // Check if X axis is tilted
-    if(Angle[0] >= TILT_THRESHOLD || Angle[0] <= -TILT_THRESHOLD) {
+    if(angleX >= TILT_THRESHOLD || angleX <= -TILT_THRESHOLD) {
       if (!isTiltedX) {
         tiltStartTimeX = millis();
         isTiltedX = true;
@@ -198,7 +190,7 @@ void loop()
     }
 
     // Check if Y axis is tilted
-    if(Angle[1] >= TILT_THRESHOLD || Angle[1] <= -TILT_THRESHOLD) {
+    if(angleY >= TILT_THRESHOLD || angleY <= -TILT_THRESHOLD) {
       if (!isTiltedY) {
         tiltStartTimeY = millis();
         isTiltedY = true;
@@ -224,7 +216,7 @@ void loop()
       POSITION_STATE = 1;
     }
 
-    if ((Angle[0] <= 3 && Angle[0] >= -3) && (Angle[1] <= 3 && Angle[1] >= -3) && POSITION_STATE == 1) {
+    if ((angleX <= 3 && angleX >= -3) && (angleY <= 3 && angleY >= -3) && POSITION_STATE == 1) {
       if (needToFadeToBlack == true && isIncreasingBrightness == false)
       {
         STATE = 0;
@@ -255,43 +247,20 @@ void loop()
 
 }
 
-
-void readRawData()
-{
-  // Read the values from the IMU Accelerometer
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B); // Ask for register 0x3B - corresponds to AcX
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU,6,true);   // From 0x3B, 6 registers are requested
-  AcX=Wire.read()<<8|Wire.read(); // Each value occupies 2 registers
-  AcY=Wire.read()<<8|Wire.read();
-  AcZ=Wire.read()<<8|Wire.read();
-
-  // Read the values from the Gyroscope
-  Wire.beginTransmission(MPU);
-  Wire.write(0x43);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU,6,true);   // From 0x43, 6 registers are requested
-  GyX=Wire.read()<<8|Wire.read(); // Each value occupies 2 registers
-  GyY=Wire.read()<<8|Wire.read();
-  GyZ=Wire.read()<<8|Wire.read();
-}
-
 void calculateAngles() {
-  Acc[0] = atan(-1*(AcX/A_R)/sqrt(pow((AcY/A_R),2) + pow((AcZ/A_R),2)))*RAD_TO_DEG;
-  Acc[1] = atan((AcY/A_R)/sqrt(pow((AcX/A_R),2) + pow((AcZ/A_R),2)))*RAD_TO_DEG;
+  unsigned long currentTime = millis();
+  if (currentTime - lastUpdateTime >= 10) {  // 10ms has passed
+    lastUpdateTime = currentTime;
 
-  // Calculation of the Gyroscope angle
-  Gy[0] = GyX/G_R;
-  Gy[1] = GyY/G_R;
-  //Gy[2] = GyZ/G_R;
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
 
-  dt = (millis() - previous_time) / 1000.0;
-  previous_time = millis();
+    // Update the Madgwick filter
+    filter.updateIMU(gx / G_R, gy / G_R, gz / G_R, ax, ay, az);
 
-  // Apply the Complementary Filter
-  Angle[0] = 0.98 *(Angle[0]+Gy[0]*dt) + 0.02*Acc[0];
-  Angle[1] = 0.98 *(Angle[1]+Gy[1]*dt) + 0.02*Acc[1];
+    // Get the Euler angles
+    angleX = filter.getRoll() - offsetX;
+    angleY = filter.getPitch() - offsetY;
+  }
 }
 
 float mapfloat(float x, float in_min, float in_max, float out_min, float out_max) {
@@ -355,13 +324,13 @@ void decreaseBrightness() {
 void saveLastAngle() {
   unsigned long currentMillis = millis();
   if (currentMillis - lastTiltTime > debounceDelay) {
-    if (abs(Angle[1]) <= TILT_THRESHOLD && Angle[0] >= TILT_THRESHOLD) {
+    if (abs(angleY) <= TILT_THRESHOLD && angleX >= TILT_THRESHOLD) {
       lastAngle = "X+";
-    } else if (abs(Angle[1]) <= TILT_THRESHOLD && Angle[0] <= -TILT_THRESHOLD) {
+    } else if (abs(angleY) <= TILT_THRESHOLD && angleX <= -TILT_THRESHOLD) {
       lastAngle = "X-";
-    } else if (abs(Angle[0]) <= TILT_THRESHOLD && Angle[1] >= TILT_THRESHOLD) {
+    } else if (abs(angleX) <= TILT_THRESHOLD && angleY >= TILT_THRESHOLD) {
       lastAngle = "Y+";
-    } else if (abs(Angle[0]) <= TILT_THRESHOLD && Angle[1] <= -TILT_THRESHOLD) {
+    } else if (abs(angleX) <= TILT_THRESHOLD && angleY <= -TILT_THRESHOLD) {
       lastAngle = "Y-";
     }
     lastTiltTime = currentMillis;
