@@ -22,6 +22,8 @@
 #include <I2Cdev.h>     
 #include <MPU6050.h>
 #include <MadgwickAHRS.h>
+#include <homekit.hpp>
+#include <characteristics.hpp>
 
 // MPU 6050 config
 Madgwick filter;
@@ -268,8 +270,13 @@ void loop()
 
   } else if (digitalRead(CHARGING_PIN) == 0) { // Is disconnected from the charger
     DEBUG_PRINT(" CHARGER DISCONNECTED ");
-    POSITION_STATE = 1;
-    fadeToWhite();
+    if(bat_percentage > 20) { // It will be turned on only if the battery percentage is avobe 20%, then it will automatically turn off to avoid the leds turning orange due to low voltage
+      POSITION_STATE = 1;
+      fadeToWhite();
+    } else {
+      fadeToBlack;
+    }
+    
     comesFromDisconnected = true;
   }
   
