@@ -113,6 +113,8 @@ String lastAngle; // Will store in which direction it was last turned on
 unsigned long lastTiltTime = 0;
 unsigned long debounceDelay = 1000; // Adjust this value based on your needs
 bool isBrightnessAdjusted = false; // Add this line at the top with the other global variables
+void calibrate(int calibrationCount);
+bool comesFromDisconnected = false; // Variable to see if the device has just been re-connected after being unplugged from the charger
 
 void setup()
 {
@@ -133,17 +135,7 @@ void setup()
   pinMode(CHARGING_PIN, INPUT); // Using internal pull-up
   pinMode(STANDBY_PIN, INPUT); // Using internal pull-up
 
-  // Calibration routine
-  const int calibrationCount = 400;  // Number of readings to take for calibration
-  for (int i = 0; i < calibrationCount; i++) {
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-    filter.updateIMU(gx / G_R, gy / G_R, gz / G_R, ax, ay, az);
-    offsetX += filter.getRoll();
-    offsetY += filter.getPitch();
-    delay(1);  // Wait a bit before the next reading
-  }
-  offsetX /= calibrationCount;  // Average to get the offset
-  offsetY /= calibrationCount;
+  calibrate(400); // Runs a calibration rutine when turning on to reset everything to zero
 
   // Ensure the LED matrix is off when turning on the device
   FastLED.clear();
@@ -158,7 +150,7 @@ void loop()
   // Print the angles values to debug
   values = "Axis X: " + String(angleX, 1) + " - Axis Y: " + String(angleY, 1);
   //DEBUG_PRINT("Brightness:" + String(brightness) + " - "+ values);
-  DEBUG_PRINT("Brightness:" + String(brightness));
+  //DEBUG_PRINT("Brightness:" + String(brightness));
 
   // TP4056 battery management
   sensorValue = analogRead(analogInPin);
@@ -174,6 +166,12 @@ void loop()
   if(digitalRead(CHARGING_PIN) == 1){ // Is charging
     //DEBUG_PRINT("CHARGER CONNECTED");
 
+    if(comesFromDisconnected == true) {
+      calibrate(150); // Runs a quick calibration rutine after coming from disconnected to ensure good responsiveness in case it was moved to a tilted surface compared to the last one
+      comesFromDisconnected = false;
+      needToFadeToBlack = true; // Fades to black after calibrating to understand when it finishes
+    }
+
     // Check if X axis is tilted
     if(angleX >= TILT_THRESHOLD || angleX <= -TILT_THRESHOLD) {
       if (!isTiltedX) {
@@ -185,9 +183,21 @@ void loop()
       
       if (millis() - tiltStartTimeX >= 1000 && STATE == 1) {
         DEBUG_PRINT("X is tilted for 1 second ///////////////////////////////////////");
-        decreaseBrightness();
-        isDecreasingBrightness = true;
-        isBrightnessAdjusted = true; // Set the flag when brightness is adjusted
+
+        if (lastAngle == "X+" && angleX <= -TILT_THRESHOLD) { // Checks if it was tilted to the opposite side of the last ON tilt
+          decreaseBrightness();
+          isDecreasingBrightness = true;
+          isBrightnessAdjusted = true; // Set the flag when brightness is adjusted
+        } else if (lastAngle == "X-" && angleX >= TILT_THRESHOLD) { // Checks if it was tilted to the opposite side of the last ON tilt
+          decreaseBrightness();
+          isDecreasingBrightness = true;
+          isBrightnessAdjusted = true; // Set the flag when brightness is adjusted
+        } else {
+          increaseBrightness();
+          saveLastAngle();
+          isIncreasingBrightness = true;
+        }
+
       }
     } else {
       isTiltedX = false;
@@ -204,8 +214,21 @@ void loop()
       
       if (millis() - tiltStartTimeY >= 1000) {
         DEBUG_PRINT("Y is tilted for 1 second ///////////////////////////////////////");
-        increaseBrightness();
-        isIncreasingBrightness = true;
+        
+        if (lastAngle == "Y+" && angleY <= -TILT_THRESHOLD) { // Checks if it was tilted to the opposite side of the last ON tilt
+          decreaseBrightness();
+          isDecreasingBrightness = true;
+          isBrightnessAdjusted = true; // Set the flag when brightness is adjusted
+        } else if (lastAngle == "Y-" && angleY >= TILT_THRESHOLD) { // Checks if it was tilted to the opposite side of the last ON tilt
+          decreaseBrightness();
+          isDecreasingBrightness = true;
+          isBrightnessAdjusted = true; // Set the flag when brightness is adjusted
+        } else {
+          increaseBrightness();
+          saveLastAngle();
+          isIncreasingBrightness = true;
+        }
+
       }
     } else {
       isTiltedY = false;
@@ -247,6 +270,7 @@ void loop()
     DEBUG_PRINT(" CHARGER DISCONNECTED ");
     POSITION_STATE = 1;
     fadeToWhite();
+    comesFromDisconnected = true;
   }
   
   FastLED.show();
@@ -255,7 +279,7 @@ void loop()
 
 void calculateAngles() {
   unsigned long currentTime = millis();
-  if (currentTime - lastUpdateTime >= 10) {  // 10ms has passed
+  if (currentTime - lastUpdateTime >= 10) {  // Fade speed
     lastUpdateTime = currentTime;
 
     mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
@@ -273,40 +297,71 @@ float mapfloat(float x, float in_min, float in_max, float out_min, float out_max
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
+void calibrate(int calibrationCount){ // Calibration routine (calibrationCount == readings to take for calibration)
+  for (int i = 0; i < calibrationCount; i++) {
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    filter.updateIMU(gx / G_R, gy / G_R, gz / G_R, ax, ay, az);
+    offsetX += filter.getRoll();
+    offsetY += filter.getPitch();
+    delay(1);  // Wait a bit before the next reading
+  }
+  offsetX /= calibrationCount;  // Average to get the offset
+  offsetY /= calibrationCount;
+}
+
 void fadeToWhite() {
-  DEBUG_PRINT(" fadeToWhite ");
+  //DEBUG_PRINT(" fadeToWhite ");
   unsigned long currentMillis = millis();
-  if(currentMillis - previousFadeWhiteMillis >= FADE_SPEED) {
+  if(currentMillis - previousFadeWhiteMillis >= 20) { // Fade speed (the higher the slower)
     previousFadeWhiteMillis = currentMillis;
     if(brightness < savedBrightness && isDecreasingBrightness == false) {
-      brightness++;
-      fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
-      FastLED.show();
+      if (savedBrightness < 40) {
+        brightness ++; // Increases the brightness very slow when savedBrightness is low.
+        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+        FastLED.show();
+      } else {
+        brightness += 3;
+        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+        FastLED.show();
+      }
+      
     }
   }
 }
 
 void fadeToBlack() {
   unsigned long currentMillis = millis();
-  if(currentMillis - previousFadeBlackMillis >= 2) {
-    previousFadeBlackMillis = currentMillis;
-    if(brightness > 0) {
-      if (brightness > 75) { // Increase the speed when values are above 75 since eyes won't see much of a change
-        brightness -= 5;
-        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
-        FastLED.show();
-      } else {
-        brightness--;
-        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
-        FastLED.show();
+  if(savedBrightness < 40) {
+    if(currentMillis - previousFadeBlackMillis >= 20) { // Fade speed (the higher the slower)
+      previousFadeBlackMillis = currentMillis;
+      if(brightness > 0) {
+          brightness--;
+          fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+          FastLED.show();
+      }
+    }
+  } else {
+    if(currentMillis - previousFadeBlackMillis >= 4) { // Fade speed (the higher the slower)
+      previousFadeBlackMillis = currentMillis;
+      if(brightness > 0) {
+        if (brightness > 75) { // Increase the speed when values are above 75 since eyes won't see much of a change
+          brightness -= 10;
+          fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+          FastLED.show();
+        } else {
+          brightness--;
+          fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+          FastLED.show();
+        }
       }
     }
   }
+  
 }
 
 void increaseBrightness() {
   unsigned long currentMillis = millis();
-  if(currentMillis - previousIncreaseMillis >= FADE_SPEED) {
+  if(currentMillis - previousIncreaseMillis >= 7) {
     previousIncreaseMillis = currentMillis;
     if(brightness < 255) {
       brightness++;
@@ -319,12 +374,22 @@ void increaseBrightness() {
 
 void decreaseBrightness() {
   unsigned long currentMillis = millis();
-  if(currentMillis - previousIncreaseMillis >= (FADE_SPEED*2)) { // Will decrease slower for more accuracy
+  if(currentMillis - previousIncreaseMillis >= 10) { // Fade speed (the higher the slower)
     previousIncreaseMillis = currentMillis;
     if(brightness > 15) {
-      brightness--;
-      fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
-      FastLED.show();
+      if (brightness > 150) { // Increase the speed when values are above 150 since eyes won't see much of a change
+        brightness -= 3;
+        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+        FastLED.show();
+      } else if (brightness > 75) { // Increase the speed when values are above 75 since eyes won't see much of a change
+        brightness -= 2;
+        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+        FastLED.show();
+      } else {
+        brightness--;
+        fill_solid(leds, NUM_LEDS, CRGB(brightness, brightness, brightness));
+        FastLED.show();
+      }
       savedBrightness = brightness;
     }
   }
