@@ -22,8 +22,6 @@
 #include <I2Cdev.h>     
 #include <MPU6050.h>
 #include <MadgwickAHRS.h>
-#include <homekit.hpp>
-#include <characteristics.hpp>
 
 // MPU 6050 config
 Madgwick filter;
